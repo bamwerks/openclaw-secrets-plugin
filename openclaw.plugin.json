@@ -1,0 +1,38 @@
+{
+  "id": "openclaw-secrets-plugin",
+  "name": "OpenClaw Secrets Plugin",
+  "version": "1.0.0",
+  "description": "Tiered, TOTP-gated, agent-blind secrets access. Tiers: open | controlled | restricted.",
+  "entry": "./index.ts",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "registryPath": {
+        "type": "string",
+        "description": "Path to the secrets registry file",
+        "default": "/opt/openclaw/.openclaw/workspace/scripts/secrets.registry"
+      },
+      "grantsDir": {
+        "type": "string",
+        "description": "Directory for grant files",
+        "default": "/opt/openclaw/.openclaw/grants"
+      },
+      "brokerBin": {
+        "type": "string",
+        "description": "Path to the secrets broker binary",
+        "default": "/usr/local/libexec/openclaw/secrets-broker"
+      },
+      "secretsBin": {
+        "type": "string",
+        "description": "Path to the secrets script",
+        "default": "/opt/openclaw/.openclaw/workspace/scripts/secrets"
+      },
+      "grantTtlSlackMs": {
+        "type": "number",
+        "description": "Grant TTL slack in milliseconds",
+        "default": 5000
+      }
+    },
+    "additionalProperties": false
+  }
+}
