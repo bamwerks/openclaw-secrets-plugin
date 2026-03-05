@@ -2,6 +2,8 @@
 
 A standalone OpenClaw plugin providing tiered, TOTP-gated, agent-blind secrets access.
 
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![OpenClaw compatible](https://img.shields.io/badge/OpenClaw-compatible-blue.svg)
+
 ## Overview
 
 Three tiers of secrets:
@@ -17,7 +19,7 @@ Three tiers of secrets:
 ### `secrets_get`
 Retrieve a secret by name. Behavior depends on tier:
 - **open**: Returns value directly
-- **controlled**: Returns value if a valid grant exists; otherwise asks Sirbam to `approve <name> <TOTP_CODE>`
+- **controlled**: Returns value if a valid grant exists; otherwise asks the human operator to run `approve <name> <TOTP_CODE>` in the OpenClaw interface
 - **restricted**: Returns metadata only — value is never fetched
 
 ### `secrets_list`
@@ -26,26 +28,61 @@ List all registered secrets and their tiers. Never returns values.
 ### `secrets_status`
 Check grant status for a specific secret. Never returns values.
 
-## Installation
+---
 
-### 1. Install dependencies
+## Quick Start
+
+### Prerequisites
+
+- macOS (plugin uses macOS Keychain for credential storage)
+- Node.js 18+
+- OpenClaw installed (see recommended setup below)
+
+### Recommended OpenClaw Setup
+
+If you haven't already, install OpenClaw to the recommended system path:
 
 ```bash
+# Create the openclaw system directory
+sudo mkdir -p /opt/openclaw/projects
+
+# Install OpenClaw globally
+npm install -g openclaw
+
+# Initialize OpenClaw at /opt/openclaw
+HOME=/opt/openclaw openclaw init
+```
+
+> **Why `/opt/openclaw`?** Keeping OpenClaw at a dedicated system path (separate from your user home) isolates agent credentials, workspace files, and plugins from your personal environment. It also makes the setup reproducible.
+
+### Install the Plugin
+
+Clone the plugin into your projects folder:
+
+```bash
+git clone https://github.com/bamwerks/openclaw-secrets-plugin /opt/openclaw/projects/openclaw-secrets-plugin
 cd /opt/openclaw/projects/openclaw-secrets-plugin
 npm install
 ```
 
-### 2. Configure `openclaw.json`
+### Configure openclaw.json
 
-Add the following to your `openclaw.json`:
+Add to your OpenClaw config at `/opt/openclaw/.openclaw/openclaw.json`:
 
 ```json
 {
   "plugins": {
     "load": {
-      "paths": ["/opt/openclaw/projects/openclaw-secrets-plugin/src/index.ts"]
+      "paths": ["/opt/openclaw/projects/openclaw-secrets-plugin"]
     }
-  },
+  }
+}
+```
+
+To expose the tools to your agents:
+
+```json
+{
   "agents": {
     "list": [{
       "id": "main",
@@ -57,15 +94,25 @@ Add the following to your `openclaw.json`:
 }
 ```
 
-### 3. Configure the registry
-
-Copy the example registry to the default location:
+### Set Up the Registry
 
 ```bash
-cp config/secrets.registry.example /opt/openclaw/.openclaw/workspace/scripts/secrets.registry
+cp /opt/openclaw/projects/openclaw-secrets-plugin/config/secrets.registry.example \
+   /opt/openclaw/.openclaw/workspace/scripts/secrets.registry
 ```
 
-Edit it to match your secrets.
+Edit `secrets.registry` to define your secrets (see [Registry Format](#registry-format) below).
+
+### Verify Installation
+
+```bash
+openclaw doctor
+openclaw secrets list
+```
+
+If `secrets_list` appears in the tool list, the plugin is active.
+
+---
 
 ## Plugin Configuration
 
@@ -130,7 +177,7 @@ npm test
 3. **Manifest `entry` must be `./index.ts`** (root), not `./src/index.ts`
 4. **`plugins.load.paths` must point to the directory**, not a file:
    ```json
-   { "plugins": { "load": { "paths": ["/path/to/openclaw-secrets-plugin"] } } }
+   { "plugins": { "load": { "paths": ["/opt/openclaw/projects/openclaw-secrets-plugin"] } } }
    ```
 5. **Run `openclaw doctor`** after installing to catch manifest/config issues before restarting
 
