@@ -182,3 +182,12 @@ npm test
 5. **Run `openclaw doctor`** after installing to catch manifest/config issues before restarting
 
 These requirements are NOT documented in the OpenClaw plugin docs as of 2026.3.2.
+
+
+## See Also
+
+[openclaw-starter](https://github.com/bamwerks/openclaw-starter) — production pipeline patterns that use this plugin, including memory architecture, swarm templates, and macOS service setup.
+
+## License
+
+MIT
