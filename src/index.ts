@@ -18,9 +18,15 @@ import type {
 import type { OpenClawPluginDefinition } from "/opt/openclaw/projects/openclaw/dist/plugin-sdk/plugins/types.js";
 import { resolveConfig } from "./config.js";
 import { loadRegistry, findEntry } from "./registry.js";
-import { readGrant } from "./grants.js";
+import { readGrant, writeGrant } from "./grants.js";
 import { fetchFromKeychain } from "./keychain.js";
+import { validateTotp } from "./totp.js";
+import { invokeBroker } from "./broker.js";
 import type { PluginConfig, RegistryEntry, GrantInfo } from "./types.js";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const ELEVATE_TTL_SECONDS = 1800; // 30 minutes — hardcoded, not configurable
 
 // ─── Schema Definitions ──────────────────────────────────────────────────────
 
@@ -34,9 +40,30 @@ const SecretsStatusParams = Type.Object({
   name: Type.String({ description: "Name of the secret to check grant status for" }),
 });
 
+const SecretsGrantParams = Type.Object({
+  name: Type.String({ description: "Secret name to grant access for" }),
+  code: Type.String({ description: "6-digit TOTP code" }),
+  ttlSeconds: Type.Optional(
+    Type.Number({ description: "Grant TTL in seconds (default: config.grantDefaultTtlSeconds)" })
+  ),
+});
+
+const SecretsElevateParams = Type.Object({
+  code: Type.String({ description: "6-digit TOTP code" }),
+});
+
+const SecretsInvokeParams = Type.Object({
+  name: Type.String({ description: "Restricted secret name" }),
+  command: Type.String({ description: "Whitelisted command alias" }),
+  args: Type.Optional(Type.Array(Type.String(), { description: "Additional arguments" })),
+});
+
 type SecretsGetParams = Static<typeof SecretsGetParams>;
 type SecretsListParams = Static<typeof SecretsListParams>;
 type SecretsStatusParams = Static<typeof SecretsStatusParams>;
+type SecretsGrantSchemaParams = Static<typeof SecretsGrantParams>;
+type SecretsElevateSchemaParams = Static<typeof SecretsElevateParams>;
+type SecretsInvokeSchemaParams = Static<typeof SecretsInvokeParams>;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -236,6 +263,227 @@ function createSecretsStatusTool(cfg: PluginConfig): AnyAgentTool {
   };
 }
 
+function createSecretsGrantTool(cfg: PluginConfig): AnyAgentTool {
+  return {
+    name: "secrets_grant",
+    label: "Grant Secret Access",
+    description:
+      "Validate a TOTP code and write a time-limited grant for a controlled or restricted secret.",
+    parameters: SecretsGrantParams,
+    ownerOnly: true,
+    execute: async (_toolCallId: string, params: SecretsGrantSchemaParams) => {
+      const { name, code, ttlSeconds } = params;
+
+      if (!/^[\w\-]+$/.test(name)) {
+        return {
+          content: [{ type: "text" as const, text: `Invalid secret name format: "${name}".` }],
+          details: { granted: false },
+        };
+      }
+      if (!/^\d{6}$/.test(code)) {
+        return {
+          content: [{ type: "text" as const, text: "Invalid TOTP code format. Must be 6 digits." }],
+          details: { granted: false },
+        };
+      }
+
+      const entries = loadRegistry(cfg.registryPath);
+      const entry: RegistryEntry | undefined = findEntry(entries, name);
+
+      if (!entry) {
+        return {
+          content: [{ type: "text" as const, text: `Secret "${name}" not found in registry.` }],
+          details: { granted: false },
+        };
+      }
+      if (entry.tier === "open") {
+        return {
+          content: [{ type: "text" as const, text: `Open secrets do not require a grant.` }],
+          details: { granted: false },
+        };
+      }
+
+      const validation = await validateTotp(code);
+      if (!validation.valid) {
+        return {
+          content: [{ type: "text" as const, text: `Invalid TOTP code.` }],
+          details: { granted: false, error: "Invalid TOTP code" },
+        };
+      }
+
+      const ttl = ttlSeconds ?? cfg.grantDefaultTtlSeconds;
+      try {
+        const result = writeGrant(cfg.grantsDir, name, ttl);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Grant written for "${name}". Expires ${result.expiresAt.toISOString()} (${ttl}s).`,
+          }],
+          details: {
+            granted: true,
+            name,
+            expiresAt: result.expiresAt.toISOString(),
+            expiresInSeconds: result.expiresInSeconds,
+          },
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to write grant: ${msg}` }],
+          details: { granted: false },
+        };
+      }
+    },
+  };
+}
+
+function createSecretsElevateTool(cfg: PluginConfig): AnyAgentTool {
+  return {
+    name: "secrets_elevate",
+    label: "Elevate Gateway Access",
+    description:
+      "Validates a TOTP code and writes a 30-minute elevate grant, enabling " +
+      "privileged operations (e.g., gateway restart). Requires owner approval.",
+    parameters: SecretsElevateParams,
+    ownerOnly: true,
+    execute: async (_toolCallId: string, params: SecretsElevateSchemaParams) => {
+      const { code } = params;
+
+      const validation = await validateTotp(code);
+      if (!validation.valid) {
+        return {
+          content: [{ type: "text" as const, text: "Invalid TOTP code. Elevation denied." }],
+          details: { elevated: false, error: "Invalid TOTP code" },
+        };
+      }
+
+      try {
+        const result = writeGrant(cfg.grantsDir, "elevate", ELEVATE_TTL_SECONDS);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Elevated. Gateway operations enabled for 30 minutes (expires ${result.expiresAt.toISOString()}).`,
+          }],
+          details: {
+            elevated: true,
+            expiresAt: result.expiresAt.toISOString(),
+            expiresInSeconds: result.expiresInSeconds,
+            windowMinutes: 30,
+          },
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to write elevate grant: ${msg}` }],
+          details: { elevated: false },
+        };
+      }
+    },
+  };
+}
+
+function createSecretsInvokeTool(cfg: PluginConfig): AnyAgentTool {
+  return {
+    name: "secrets_invoke",
+    label: "Invoke via Secrets Broker",
+    description:
+      "Proxy a whitelisted command through the secrets-broker for a restricted secret. " +
+      "The secret value never enters agent context.",
+    parameters: SecretsInvokeParams,
+    ownerOnly: true,
+    execute: async (_toolCallId: string, params: SecretsInvokeSchemaParams) => {
+      const { name, command, args = [] } = params;
+
+      if (!/^[\w\-]+$/.test(name)) {
+        return {
+          content: [{ type: "text" as const, text: `Invalid secret name format: "${name}".` }],
+          details: { success: false, exitCode: 1, name, command },
+        };
+      }
+      if (!/^[\w\-]+$/.test(command)) {
+        return {
+          content: [{ type: "text" as const, text: `Invalid command format: "${command}".` }],
+          details: { success: false, exitCode: 1, name, command },
+        };
+      }
+
+      // Validate each arg
+      const SAFE_ARG_RE = /^[\w\-\.\/=:@]+$/;
+      for (const arg of args) {
+        if (!SAFE_ARG_RE.test(arg)) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Argument contains disallowed characters: "${arg}".`,
+            }],
+            details: { success: false, exitCode: 1, name, command },
+          };
+        }
+      }
+
+      const entries = loadRegistry(cfg.registryPath);
+      const entry: RegistryEntry | undefined = findEntry(entries, name);
+
+      if (!entry || entry.tier !== "restricted") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `"${name}" is not a restricted secret or does not exist.`,
+          }],
+          details: { success: false, exitCode: 1, name, command },
+        };
+      }
+
+      const allowedCmds = new Set(cfg.allowedCommands);
+      if (!allowedCmds.has(command)) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Command "${command}" is not in the allowedCommands whitelist.`,
+          }],
+          details: { success: false, exitCode: 1, name, command },
+        };
+      }
+
+      // Belt-and-suspenders: check active grant
+      const grantInfo = readGrant(cfg.grantsDir, name, cfg.grantTtlSlackMs);
+      if (!grantInfo.granted) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `No active grant for "${name}". Use secrets_grant first.`,
+          }],
+          details: { success: false, exitCode: 1, name, command },
+        };
+      }
+
+      try {
+        const result = await invokeBroker(cfg.brokerBin, name, command, args, allowedCmds);
+        return {
+          content: [{
+            type: "text" as const,
+            text: result.success
+              ? `Broker invocation succeeded.`
+              : `Broker invocation failed (exit ${result.exitCode}).`,
+          }],
+          details: {
+            success: result.success,
+            exitCode: result.exitCode,
+            name,
+            command,
+          },
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Broker error: ${msg}` }],
+          details: { success: false, exitCode: 1, name, command },
+        };
+      }
+    },
+  };
+}
+
 // ─── Plugin Definition ────────────────────────────────────────────────────────
 
 const plugin: OpenClawPluginDefinition = {
@@ -251,9 +499,18 @@ const plugin: OpenClawPluginDefinition = {
     api.registerTool(createSecretsGetTool(cfg), { optional: true });
     api.registerTool(createSecretsListTool(cfg), { optional: true });
     api.registerTool(createSecretsStatusTool(cfg), { optional: true });
+    api.registerTool(createSecretsGrantTool(cfg), { optional: true });
+    api.registerTool(createSecretsElevateTool(cfg), { optional: true });
+    api.registerTool(createSecretsInvokeTool(cfg), { optional: true });
+
+    if (cfg.allowedCommands.length === 0) {
+      api.logger.warn(
+        `[openclaw-secrets-plugin] allowedCommands is empty — secrets_invoke will always reject commands.`
+      );
+    }
 
     api.logger.info(
-      `[openclaw-secrets-plugin] Registered 3 tools. Registry: ${cfg.registryPath}`
+      `[openclaw-secrets-plugin] Registered 6 tools. Registry: ${cfg.registryPath}`
     );
   },
 };

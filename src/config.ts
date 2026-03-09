@@ -7,6 +7,8 @@ export const DEFAULT_CONFIG: PluginConfig = {
   brokerBin: "/usr/local/libexec/openclaw/secrets-broker",
   secretsBin: "/opt/openclaw/.openclaw/workspace/scripts/secrets",
   grantTtlSlackMs: 5000,
+  grantDefaultTtlSeconds: 300,
+  allowedCommands: [],
 };
 
 export function resolveConfig(
@@ -34,5 +36,14 @@ export function resolveConfig(
       typeof pluginConfig["grantTtlSlackMs"] === "number"
         ? pluginConfig["grantTtlSlackMs"]
         : DEFAULT_CONFIG.grantTtlSlackMs,
+    grantDefaultTtlSeconds:
+      typeof pluginConfig["grantDefaultTtlSeconds"] === "number"
+        ? pluginConfig["grantDefaultTtlSeconds"]
+        : DEFAULT_CONFIG.grantDefaultTtlSeconds,
+    allowedCommands: Array.isArray(pluginConfig["allowedCommands"])
+      ? (pluginConfig["allowedCommands"] as string[]).filter(
+          (c): c is string => typeof c === "string"
+        )
+      : DEFAULT_CONFIG.allowedCommands,
   };
 }
